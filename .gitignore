@@ -1,0 +1,28 @@
+# ROOT / analysis outputs
+*.root
+*.pdf
+#*.png
+*.jpg
+*.jpeg
+*.tsv
+
+# logs / temp
+*.log
+*.tmp
+*.swp
+*~
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# local env / secrets
+.env
+
+# big generated dirs
+volatile/
+work/
+EOF

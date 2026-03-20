@@ -175,6 +175,8 @@ static inline vector<RangeI> toRangeI(const vector<vector<int>>& vv) {
 
 static inline string build_evcount_cut_string(const vector<RangeI>& ranges,
                                               const string& branch_evcount) {
+  if (ranges.empty()) return "true";
+
   string out;
   for (const auto& r : ranges) {
     string term = Form("(%d<(int)round(%s)&&(int)round(%s)<=%d)",
@@ -186,6 +188,8 @@ static inline string build_evcount_cut_string(const vector<RangeI>& ranges,
 
 static inline string build_event_cut_string(const vector<RangeI>& ranges,
                                             const string& branch_event) {
+  if (ranges.empty()) return "true";
+
   string out;
   for (const auto& r : ranges) {
     string term = Form("(%d<=(int)round(%s)&&(int)round(%s)<%d)",
@@ -262,6 +266,30 @@ static inline vector<vector<int>> mergeOverlappingRanges(const vector<vector<int
   }
 
   return merged;
+}
+
+static inline vector<vector<int>> trimQuartetRangesToValidBounds(const vector<vector<int>>& ranges,
+                                                                 int index_min_valid,
+                                                                 int index_max_valid)
+{
+  vector<vector<int>> trimmed;
+
+  for (const auto& r : ranges) {
+    if (r.size() < 2) continue;
+
+    int lo = r[0];
+    int hi = r[1];
+
+    // Move inward in full-quartet steps until the range is mappable
+    while (lo < index_min_valid && lo <= hi) lo += 4;
+    while (hi > index_max_valid && lo <= hi) hi -= 4;
+
+    if (lo <= hi) {
+      trimmed.push_back({lo, hi});
+    }
+  }
+
+  return trimmed;
 }
 
 // =================================================================================
@@ -442,15 +470,17 @@ static inline SelectionResult build_event_selection(const string& rootfile, cons
   Q_arr.swap(Q_sorted);
 
   // ---------------------------------------------------------
-  // Rolling charge stability (always part of helper)
-  // N=1 effectively disables the rolling requirement
+  // Rolling charge stability
+  // N=1 means bypass the rolling stability requirement
   // ---------------------------------------------------------
-  evC_arr = stableEvcountsFromChargeWindow(
-    evC_arr,
-    Q_arr,
-    sel.stable_window_N,
-    sel.max_charge_frac_spread
-  );
+  if (sel.stable_window_N > 1) {
+    evC_arr = stableEvcountsFromChargeWindow(
+      evC_arr,
+      Q_arr,
+      sel.stable_window_N,
+      sel.max_charge_frac_spread
+    );
+  }
 
   res.n_scaler_reads_post = (int)evC_arr.size();
 
@@ -460,6 +490,21 @@ static inline SelectionResult build_event_selection(const string& rootfile, cons
     return res;
   }
 
+  // ---------------------------------------------------------
+  // Build mapping array from TSHelH evNumber
+  // Valid ordinal index domain for evcount -> evNumber mapping is [1, evN_arr.size()]
+  // ---------------------------------------------------------
+  vector<int> evN_arr = take_int_sorted(d_shelp, sel.branch_evNumber);
+  const int map_index_min_valid = 1;
+  const int map_index_max_valid = (int)evN_arr.size();
+
+  if (map_index_max_valid < 1) {
+    res.ok = false;
+    res.message = "No evNumber entries available for mapping.";
+    return res;
+  }
+
+ 
   // ---------------------------------------------------------
   // Build accepted evcount ranges
   // ---------------------------------------------------------
@@ -479,27 +524,40 @@ static inline SelectionResult build_event_selection(const string& rootfile, cons
   }
 
   auto evtCRanges_merged_vv = mergeOverlappingRanges(evtCRanges_raw);
-  res.evcount_ranges = toRangeI(evtCRanges_merged_vv);
 
-  // ---------------------------------------------------------
-  // Build mapping arrays
-  // ---------------------------------------------------------
-  vector<int> evN_arr   = take_int_sorted(d_shelp, sel.branch_evNumber);
-  vector<int> gEvnumArr = take_int_sorted(d_T, sel.branch_evnum_T);
-
-  // ---------------------------------------------------------
-  // Map evcount ranges -> evNumber and g.evnum ranges
-  // NOTE: preserves original indexing convention
-  // ---------------------------------------------------------
-  for (const auto& r : res.evcount_ranges) {
-    if (r.lo < 1 || r.hi < 1) continue;
-    if (r.lo > (int)evN_arr.size() || r.hi > (int)evN_arr.size()) continue;
-    if (r.lo > (int)gEvnumArr.size() || r.hi > (int)gEvnumArr.size()) continue;
-
-    res.evNumber_ranges.push_back({evN_arr[r.lo - 1], evN_arr[r.hi - 1]});
-    res.gevnum_ranges.push_back({gEvnumArr[r.lo - 1], gEvnumArr[r.hi - 1]});
+  vector<vector<int>> evtCRanges_final_vv;
+  if (helicity_requires_quartet_snap(sel.helicity_mode)) {
+    evtCRanges_final_vv = trimQuartetRangesToValidBounds(
+      evtCRanges_merged_vv,
+      map_index_min_valid,
+      map_index_max_valid
+    );
+  } else {
+    evtCRanges_final_vv = evtCRanges_merged_vv;
   }
 
+  res.evcount_ranges = toRangeI(evtCRanges_final_vv);
+
+  if (res.evcount_ranges.empty()) {
+    res.ok = false;
+    res.message = "No valid evcount ranges remained after quartet-bound trimming.";
+    return res;
+  }
+
+  // ---------------------------------------------------------
+  // Map evcount ranges -> evNumber ranges
+  // Then use the same event-number ranges for g.evnum in T
+  // ---------------------------------------------------------
+  for (const auto& r : res.evcount_ranges) {
+    if (r.lo < map_index_min_valid || r.hi < map_index_min_valid) continue;
+    if (r.lo > map_index_max_valid || r.hi > map_index_max_valid) continue;
+
+    const int ev_lo = evN_arr[r.lo - 1];
+    const int ev_hi = evN_arr[r.hi - 1];
+
+    res.evNumber_ranges.push_back({ev_lo, ev_hi});
+    res.gevnum_ranges.push_back({ev_lo, ev_hi});
+  }
   // ---------------------------------------------------------
   // Build cut strings
   // ---------------------------------------------------------

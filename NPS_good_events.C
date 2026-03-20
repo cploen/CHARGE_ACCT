@@ -75,7 +75,7 @@ struct Config {
   string input_root = "";
 
   // Helper selection settings
-  string helicity_mode = "quartet_pm";   // quartet_pm | quartet_all | ignore
+  string helicity_mode = "quartet_all";   // quartet_pm | quartet_all | ignore
   bool use_current_window = true;
   double I0_fixed = -1.0;                // if > 0, use fixed I0; otherwise use peak
   double window_frac = 0.15;
@@ -85,7 +85,7 @@ struct Config {
   double mean_current_min = 2.75;
 
   int stable_window_N = 30;              // N=1 effectively disables rolling stability
-  double max_charge_frac_spread = 0.08;
+  double max_charge_frac_spread = 0.10;
 
   // Physics cuts on T (off by default)
   bool apply_physics_cuts = false;
@@ -596,6 +596,55 @@ static void makeRollingFracSpreadMaskPlot(const string& rootfile,
   cout << "[diag] Saved " << png_path << "\n";
 }
 
+static void makeTOccupancyPanels(const string& rootfile,
+                                 const Config& cfg,
+                                 const SelectionSettings& sel,
+                                 const SelectionResult& pick)
+{
+  RDataFrame dT("T", rootfile);
+
+  auto d_sel = dT.Filter(pick.gevnum_cut);
+
+  auto gMin = dT.Min<double>(sel.branch_evnum_T).GetValue();
+  auto gMax = dT.Max<double>(sel.branch_evnum_T).GetValue();
+
+  int nBinsX = std::max(100, (int)((gMax - gMin) / 50.0));
+
+  auto hRaw = dT.Histo1D(
+    {"hTOccRaw",
+     "Raw T occupancy;g.evnum;counts",
+     nBinsX, gMin, gMax},
+    sel.branch_evnum_T
+  );
+
+  auto hSel = d_sel.Histo1D(
+    {"hTOccSel",
+     "Selected T occupancy;g.evnum;counts",
+     nBinsX, gMin, gMax},
+    sel.branch_evnum_T
+  );
+
+  TCanvas c("c_t_occupancy","T occupancy panels",1400,900);
+  c.Divide(1,2);
+
+  c.cd(1);
+  gPad->SetMargin(0.10, 0.05, 0.12, 0.08);
+  hRaw->Draw("hist");
+
+  c.cd(2);
+  gPad->SetMargin(0.10, 0.05, 0.12, 0.08);
+  hSel->Draw("hist");
+
+  const string tag = run_seg_tag_from_input(rootfile);
+  const string png_path = join_path(
+    cfg.out_dir,
+    Form("%s_%s_diag_Toccupancy.png", cfg.out_prefix.c_str(), tag.c_str())
+  );
+
+  c.SaveAs(png_path.c_str());
+  cout << "[diag] Saved " << png_path << "\n";
+}
+
 // =================================================================================
 // Report (wrapper only)
 // =================================================================================
@@ -734,6 +783,7 @@ int nps(const Config& cfg) {
     makeChargePeakPlot(rootfile, cfg, sel);
     makeRollingFracSpreadPlot(rootfile, cfg, sel);
     makeRollingFracSpreadMaskPlot(rootfile, cfg, sel);
+    makeTOccupancyPanels(rootfile, cfg, sel, pick);
   }
  
   if (cfg.write_report) {
